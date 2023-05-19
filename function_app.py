@@ -24,8 +24,9 @@ def test_function(mytimer: func.TimerRequest) -> None:
     result = requests.get(url)
 
     soup = BeautifulSoup(result.content, 'html.parser')
+    filtered = '\n'.join(map(str, soup.find_all('a', {'class': 'status0'})))
 
-    logging.info(soup)
+    logging.info(filtered)
 
 
 
