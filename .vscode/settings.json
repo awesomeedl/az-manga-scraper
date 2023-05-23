@@ -6,5 +6,9 @@
   "azureFunctions.projectRuntime": "~4",
   "debug.internalConsoleOptions": "neverOpen",
   "azureFunctions.projectLanguageModel": 2,
-  "azureFunctions.templateFilter": "Verified"
+  "azureFunctions.templateFilter": "Verified",
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter"
+  },
+  "python.formatting.provider": "none"
 }
