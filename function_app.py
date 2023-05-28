@@ -1,9 +1,11 @@
 import datetime
 import json
 import logging
+import os
 
 import azure.durable_functions as df
 import azure.functions as func
+from azure.data.tables import TableClient
 import requests
 from bs4 import BeautifulSoup
 
@@ -15,7 +17,7 @@ base_url = "https://www.manhuagui.com/comic/"
 
 
 @app.durable_client_input(client_name="client")
-@app.timer_trigger(
+@app.schedule(
     schedule="0 */5 * * * *", arg_name="mytimer", run_on_startup=True, use_monitor=False
 )
 async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestrationClient):
@@ -35,46 +37,45 @@ async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestratio
 # Orchestrator
 @app.orchestration_trigger(context_name="context")
 def scrape_orchestrator(context: df.DurableOrchestrationContext):
-    table = yield context.call_activity("generate_list")
+    table = yield context.call_activity("read_table", "index")
 
     scrape_tasks = [context.call_activity("scrape", manga) for manga in table]
     results: list[dict] = yield context.task_all(scrape_tasks)
 
     notify_tasks = []
-    for i in range(len(table)):
-        if not results[i]: continue # No update
+    update_tasks = []
 
-        # Has update
-        if 'latest' in entity:
-            notify_tasks.append(context.call_activity('send_webhook'))
+    for i in range(len(table)):
+
 
         entity = table[i]
         entity['latest'] = max(results[i].keys(), key=int)
-        notify_tasks.append(context.call_activity('update_table', entity))
+        notify_tasks.append(context.call_activity('write_table', entity))
 
-    yield context.task_all(notify_tasks)
+    # yield context.task_all(notify_tasks)
 
 
+@app.activity_trigger(input_name="key")
+def read_table(key):
+    client: TableClient = TableClient.from_connection_string(os.environ['AzureWebJobsStorage'], 'manga')
+    table = list(client.query_entities(f"PartitionKey eq '{key}'"))
 
-@app.table_input("table", connection='AzureWebJobsStorage', table_name='manga', partition_key='index')
-@app.activity_trigger(input_name="param")
-def generate_list(param, table):
-    table = json.loads(table)
     logging.info(table)
     return table
 
-@app.table_output("table", connection='AzureWebJobsStorage', table_name='manga', partition_key='index')
-@app.activity_trigger(input_name='param')
-def update_table(updated_entity, table: func.Out[str]):
-    table.set(json.dumps(updated_entity))
+
+@app.activity_trigger(input_name='entity')
+def write_table(entity):
+    client: TableClient = TableClient.from_connection_string(os.environ['AzureWebJobsStorage'], 'manga')
+    client.upsert_entity(entity)
+    
     logging.info('successfully updated table entity')
 
 @app.activity_trigger(input_name="manga")
-def scrape(manga: dict):
+def scrape(args: tuple[str, str | None]):
     # logging.info(f"task received manga {manga}")
 
-    manga_id = manga['RowKey']
-    latest_ep = int(manga['latest']) if 'latest' in manga else None
+    manga_id = args[0], latest_ep = args[1] 
 
     page = requests.get(f"{base_url}{manga_id}/")
     soup = BeautifulSoup(page.content, "html.parser")
