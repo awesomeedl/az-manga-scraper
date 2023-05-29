@@ -42,45 +42,45 @@ def scrape_orchestrator(context: df.DurableOrchestrationContext):
     scrape_tasks = [context.call_activity("scrape", manga) for manga in table]
     results: list[dict] = yield context.task_all(scrape_tasks)
 
-    notify_tasks = []
-    update_tasks = []
+    notify_tasks = [context.call_sub_orchestrator("notify_orchestrator", (table[i], results[i])) for i in range(len(table))]
 
-    for i in range(len(table)):
+    yield context.task_all(notify_tasks)
+
+@app.orchestration_trigger(context_name='context')
+def notify_orchestrator(context: df.DurableOrchestrationContext):
+    input: tuple[dict, dict] = context.get_input() # type: ignore
+    manga, result = input[0], input[1]
 
 
-        entity = table[i]
-        entity['latest'] = max(results[i].keys(), key=int)
-        notify_tasks.append(context.call_activity('write_table', entity))
-
-    # yield context.task_all(notify_tasks)
-
+    
 
 @app.activity_trigger(input_name="key")
 def read_table(key):
     client: TableClient = TableClient.from_connection_string(os.environ['AzureWebJobsStorage'], 'manga')
     table = list(client.query_entities(f"PartitionKey eq '{key}'"))
 
-    logging.info(table)
+    logging.info(f'query returned table: {table}')
     return table
 
 
 @app.activity_trigger(input_name='entity')
-def write_table(entity):
+def write_table(entity) -> None:
     client: TableClient = TableClient.from_connection_string(os.environ['AzureWebJobsStorage'], 'manga')
     client.upsert_entity(entity)
     
-    logging.info('successfully updated table entity')
+    logging.info(f'successfully updated table entity: {entity}')
+
 
 @app.activity_trigger(input_name="manga")
 def scrape(args: tuple[str, str | None]):
     # logging.info(f"task received manga {manga}")
 
-    manga_id = args[0], latest_ep = args[1] 
+    manga_id = args[0], latest_ep = args[1]  # type: ignore
 
     page = requests.get(f"{base_url}{manga_id}/")
     soup = BeautifulSoup(page.content, "html.parser")
     
-    episodes = {}
+    episodes: dict[int, str] = {}
 
     for a in soup.find_all("a", class_="status0"):
         # This following statement extracts the episode id,
