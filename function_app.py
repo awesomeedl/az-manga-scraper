@@ -1,7 +1,9 @@
+from ast import Dict
 import datetime
 import json
 import logging
 import os
+from turtle import update
 
 import azure.durable_functions as df
 import azure.functions as func
@@ -37,26 +39,40 @@ async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestratio
 # Orchestrator
 @app.orchestration_trigger(context_name="context")
 def scrape_orchestrator(context: df.DurableOrchestrationContext):
-    table = yield context.call_activity("read_table", "index")
+    table: list[dict] = yield context.call_activity("read_table", "index")
 
-    scrape_tasks = [context.call_activity("scrape", manga) for manga in table]
-    results: list[dict] = yield context.task_all(scrape_tasks)
+    scrape_tasks = []
+    
+    for manga in table:
+        manga_id = manga['RowKey']
+        latest_ep = manga.get('latest')
 
-    notify_tasks = [context.call_sub_orchestrator("notify_orchestrator", (table[i], results[i])) for i in range(len(table))]
+        task = context.call_activity('scrape', (manga_id, latest_ep))
+        scrape_tasks.append(task)
+    
+    results: list[dict[int, str]] = yield context.task_all(scrape_tasks)
 
-    yield context.task_all(notify_tasks)
+    update_tasks = []
+    notify_tasks = []
+    for i, manga in enumerate(table):
+        if not results[i]: continue
 
-@app.orchestration_trigger(context_name='context')
-def notify_orchestrator(context: df.DurableOrchestrationContext):
-    input: tuple[dict, dict] = context.get_input() # type: ignore
-    manga, result = input[0], input[1]
+        if 'latest' in manga:
+            notify_tasks.append(context.call_activity('notify', (manga['name'], results[i])))
+        
+        # manga['latest'] = max(results[i].keys())
+        # update_tasks.append(context.call_activity('write_table', manga))
 
+    if update_tasks:
+        yield context.task_all(update_tasks)
+    if notify_tasks:
+        yield context.task_all(notify_tasks)
 
     
 
 @app.activity_trigger(input_name="key")
 def read_table(key):
-    client: TableClient = TableClient.from_connection_string(os.environ['AzureWebJobsStorage'], 'manga')
+    client: TableClient = TableClient.from_connection_string(os.environ['MangaTableURL'], 'manga')
     table = list(client.query_entities(f"PartitionKey eq '{key}'"))
 
     logging.info(f'query returned table: {table}')
@@ -64,18 +80,21 @@ def read_table(key):
 
 
 @app.activity_trigger(input_name='entity')
-def write_table(entity) -> None:
-    client: TableClient = TableClient.from_connection_string(os.environ['AzureWebJobsStorage'], 'manga')
+def write_table(entity) -> str:
+    logging.info(f'write_table received param: {entity}')
+    client: TableClient = TableClient.from_connection_string(os.environ['MangaTableURL'], 'manga')
     client.upsert_entity(entity)
     
-    logging.info(f'successfully updated table entity: {entity}')
+    return f'successfully updated table entity: {entity}'
 
 
-@app.activity_trigger(input_name="manga")
-def scrape(args: tuple[str, str | None]):
-    # logging.info(f"task received manga {manga}")
+@app.activity_trigger(input_name="args")
+def scrape(args: tuple[str, str]):
+    
 
-    manga_id = args[0], latest_ep = args[1]  # type: ignore
+    manga_id, latest_ep = args[0], int(args[1])
+
+    logging.info(f"scrape received args: id:{manga_id} latest:{latest_ep}")
 
     page = requests.get(f"{base_url}{manga_id}/")
     soup = BeautifulSoup(page.content, "html.parser")
@@ -98,22 +117,21 @@ def scrape(args: tuple[str, str | None]):
         latest = max(episodes.keys())
         return {latest: episodes[latest]}
 
-# @app.activity_trigger(input_name="new_manga_list")
-# def notify(new_manga_list: list[dict]):
-#     table_client = TableClient.from_connection_string(
-#         conn_str=os.environ["AzureWebJobsStorage"], table_name="manga"
-#     )
+@app.activity_trigger(input_name="args")
+def notify(args: tuple[str, dict[int, str]]) -> str:
+    
+    title, episodes = args[0], args[1]
+    logging.info(f"notify received args: name:{args[0]} episodes:{args[1]}")
 
-#     notify_url = os.environ["NotifyURL"]
+    notify_url = os.environ["NotifyURL"]
 
-#     # logging.info(results)
-#     for manga in new_manga_list:
-#         for manga_id, latest_ep in manga.items():
-#             entity = table_client.get_entity('index', str(manga_id))
-#             if entity.get('latest'):
-#                 body = { "content": "new manga notification" }
-#                 requests.post(notify_url, json=body )
+    body = {
+        "content": f"Manga Update:\n{title}\n{json.dumps(episodes)}"
+    }
 
-#                 entity['latest'] = latest_ep
+    requests.post(notify_url, json=body)
 
-#                 table_client.update_entity()
+    '''
+    Activity trigger requires a return value, otherwise the orchestrator function will throw an exception
+    '''
+    return 'notified user of new manga update'
