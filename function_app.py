@@ -1,14 +1,12 @@
-from ast import Dict
 import datetime
 import json
 import logging
 import os
-from turtle import update
+from urllib.request import Request, urlopen
 
 import azure.durable_functions as df
 import azure.functions as func
 from azure.data.tables import TableClient
-import requests
 from bs4 import BeautifulSoup
 
 # Learn more at aka.ms/pythonprogrammingmodel
@@ -39,7 +37,9 @@ async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestratio
 # Orchestrator
 @app.orchestration_trigger(context_name="context")
 def scrape_orchestrator(context: df.DurableOrchestrationContext):
-    table: list[dict] = yield context.call_activity("read_table", "index")
+    table: list[dict] = yield context.call_activity("read_table", {"par_key": "index"})
+
+    logging.info(type(table))
 
     scrape_tasks = []
     
@@ -70,13 +70,14 @@ def scrape_orchestrator(context: df.DurableOrchestrationContext):
 
     
 
-@app.activity_trigger(input_name="key")
-def read_table(key):
-    client: TableClient = TableClient.from_connection_string(os.environ['MangaTableURL'], 'manga')
-    table = list(client.query_entities(f"PartitionKey eq '{key}'"))
+@app.activity_trigger(input_name="info")
+@app.table_input('table', 'MangaTableURL', 'manga', partition_key='{par_key}')
+def read_table(table, info):
+    # client: TableClient = TableClient.from_connection_string(os.environ['MangaTableURL'], 'manga')
+    # table = list(client.query_entities(f"PartitionKey eq '{key}'"))
 
     logging.info(f'query returned table: {table}')
-    return table
+    return json.loads(table)
 
 
 @app.activity_trigger(input_name='entity')
@@ -96,8 +97,9 @@ def scrape(args: tuple[str, str]):
 
     logging.info(f"scrape received args: id:{manga_id} latest:{latest_ep}")
 
-    page = requests.get(f"{base_url}{manga_id}/")
-    soup = BeautifulSoup(page.content, "html.parser")
+    response = urlopen(f"{base_url}{manga_id}/")
+
+    soup = BeautifulSoup(response.read(), "html.parser")
     
     episodes: dict[int, str] = {}
 
@@ -126,10 +128,14 @@ def notify(args: tuple[str, dict[int, str]]) -> str:
     notify_url = os.environ["NotifyURL"]
 
     body = {
-        "content": f"Manga Update:\n{title}\n{json.dumps(episodes)}"
+        "content": f"Manga Update:\n{title}\n{episodes}"
     }
 
-    requests.post(notify_url, json=body)
+    req = Request(
+        url=notify_url,
+        headers={'Content-Type': 'application/json', 'User-agent': 'DiscordBot'})
+
+    urlopen(req, data=json.dumps(body).encode('utf-8'))
 
     '''
     Activity trigger requires a return value, otherwise the orchestrator function will throw an exception
