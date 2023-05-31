@@ -6,7 +6,7 @@ from urllib.request import Request, urlopen
 
 import azure.durable_functions as df
 import azure.functions as func
-from azure.data.tables import TableClient
+import requests
 from bs4 import BeautifulSoup
 
 # Learn more at aka.ms/pythonprogrammingmodel
@@ -37,9 +37,7 @@ async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestratio
 # Orchestrator
 @app.orchestration_trigger(context_name="context")
 def scrape_orchestrator(context: df.DurableOrchestrationContext):
-    table: list[dict] = yield context.call_activity("read_table", {"par_key": "index"})
-
-    logging.info(type(table))
+    table: list[dict] = yield context.call_activity("read_table")
 
     scrape_tasks = []
     
@@ -60,8 +58,8 @@ def scrape_orchestrator(context: df.DurableOrchestrationContext):
         if 'latest' in manga:
             notify_tasks.append(context.call_activity('notify', (manga['name'], results[i])))
         
-        # manga['latest'] = max(results[i].keys())
-        # update_tasks.append(context.call_activity('write_table', manga))
+        manga['latest'] = max(results[i].keys())
+        update_tasks.append(context.call_activity('write_table', manga))
 
     if update_tasks:
         yield context.task_all(update_tasks)
@@ -71,35 +69,33 @@ def scrape_orchestrator(context: df.DurableOrchestrationContext):
     
 
 @app.activity_trigger(input_name="info")
-@app.table_input('table', 'MangaTableURL', 'manga', partition_key='{par_key}')
+@app.table_input('table', 'MangaTableURL', 'manga', partition_key='index')
 def read_table(table, info):
-    # client: TableClient = TableClient.from_connection_string(os.environ['MangaTableURL'], 'manga')
-    # table = list(client.query_entities(f"PartitionKey eq '{key}'"))
-
     logging.info(f'query returned table: {table}')
+
     return json.loads(table)
 
 
 @app.activity_trigger(input_name='entity')
-def write_table(entity) -> str:
+@app.table_output('table', 'MangaTableURL', 'manga', partition_key='index')
+def write_table(table: func.Out[str], entity: dict) -> str:
     logging.info(f'write_table received param: {entity}')
-    client: TableClient = TableClient.from_connection_string(os.environ['MangaTableURL'], 'manga')
-    client.upsert_entity(entity)
+
+    # We must set the ETag property like this in order to update the record
+    entity['ETag'] = '*'
+    table.set(json.dumps(entity))
     
     return f'successfully updated table entity: {entity}'
 
 
 @app.activity_trigger(input_name="args")
 def scrape(args: tuple[str, str]):
-    
-
     manga_id, latest_ep = args[0], int(args[1])
 
     logging.info(f"scrape received args: id:{manga_id} latest:{latest_ep}")
 
-    response = urlopen(f"{base_url}{manga_id}/")
-
-    soup = BeautifulSoup(response.read(), "html.parser")
+    response = requests.get(f"{base_url}{manga_id}/")
+    soup = BeautifulSoup(response.content, "html.parser")
     
     episodes: dict[int, str] = {}
 
@@ -121,21 +117,19 @@ def scrape(args: tuple[str, str]):
 
 @app.activity_trigger(input_name="args")
 def notify(args: tuple[str, dict[int, str]]) -> str:
-    
     title, episodes = args[0], args[1]
+
     logging.info(f"notify received args: name:{args[0]} episodes:{args[1]}")
 
     notify_url = os.environ["NotifyURL"]
 
-    body = {
-        "content": f"Manga Update:\n{title}\n{episodes}"
+
+    embed = {
+        'title': title,
+        'fields': [{'name': v, 'value': f'[Link]({base_url}{k}/)', 'inline': True} for k, v in episodes.items()]
     }
 
-    req = Request(
-        url=notify_url,
-        headers={'Content-Type': 'application/json', 'User-agent': 'DiscordBot'})
-
-    urlopen(req, data=json.dumps(body).encode('utf-8'))
+    requests.post(notify_url, json={'embeds': [embed]})
 
     '''
     Activity trigger requires a return value, otherwise the orchestrator function will throw an exception
