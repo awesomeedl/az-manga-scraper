@@ -2,7 +2,6 @@ import datetime
 import json
 import logging
 import os
-from urllib.request import Request, urlopen
 
 import azure.durable_functions as df
 import azure.functions as func
@@ -17,9 +16,7 @@ base_url = "https://www.manhuagui.com/comic/"
 
 
 @app.durable_client_input(client_name="client")
-@app.schedule(
-    schedule="0 */5 * * * *", arg_name="mytimer", run_on_startup=True, use_monitor=False
-)
+@app.schedule(schedule="0 0 */4 * * *", arg_name="mytimer", run_on_startup=False, use_monitor=False)
 async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestrationClient):
     utc_timestamp = (
         datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
@@ -56,7 +53,7 @@ def scrape_orchestrator(context: df.DurableOrchestrationContext):
         if not results[i]: continue
 
         if 'latest' in manga:
-            notify_tasks.append(context.call_activity('notify', (manga['name'], results[i])))
+            notify_tasks.append(context.call_activity('notify', (manga, results[i])))
         
         manga['latest'] = max(results[i].keys())
         update_tasks.append(context.call_activity('write_table', manga))
@@ -116,8 +113,8 @@ def scrape(args: tuple[str, str]):
         return {latest: episodes[latest]}
 
 @app.activity_trigger(input_name="args")
-def notify(args: tuple[str, dict[int, str]]) -> str:
-    title, episodes = args[0], args[1]
+def notify(args: tuple[dict, dict[int, str]]) -> str:
+    manga, episodes = args[0], args[1]
 
     logging.info(f"notify received args: name:{args[0]} episodes:{args[1]}")
 
@@ -125,9 +122,19 @@ def notify(args: tuple[str, dict[int, str]]) -> str:
 
 
     embed = {
-        'title': title,
-        'fields': [{'name': v, 'value': f'[Link]({base_url}{k}/)', 'inline': True} for k, v in episodes.items()]
+        'title': manga['name'],
+        'thumbnail': { 
+            'url': manga['img'] 
+        },
+        'fields': [
+            {
+                'name': v, 
+                'value': f'[Link]({base_url}{k}/)', 
+                'inline': True
+            } for k, v in episodes.items()
+        ]
     }
+
 
     requests.post(notify_url, json={'embeds': [embed]})
 
