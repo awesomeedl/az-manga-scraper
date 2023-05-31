@@ -1,28 +1,26 @@
-from ast import Dict
 import datetime
 import json
 import logging
 import os
-from turtle import update
 
 import azure.durable_functions as df
 import azure.functions as func
-from azure.data.tables import TableClient
 import requests
+from azure.data.tables import TableClient
 from bs4 import BeautifulSoup
 
 # Learn more at aka.ms/pythonprogrammingmodel
 
-app = df.DFApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+app = df.DFApp()
 
-base_url = "https://www.manhuagui.com/comic/"
+base_url = "https://tw.manhuagui.com/comic/"
 
 
 @app.durable_client_input(client_name="client")
 @app.schedule(
     schedule="0 */5 * * * *", arg_name="mytimer", run_on_startup=True, use_monitor=False
 )
-async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestrationClient):
+async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestrationClient) -> None:
     utc_timestamp = (
         datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
     )
@@ -117,21 +115,22 @@ def scrape(args: tuple[str, str]):
         latest = max(episodes.keys())
         return {latest: episodes[latest]}
 
+
 @app.activity_trigger(input_name="args")
 def notify(args: tuple[str, dict[int, str]]) -> str:
-    
     title, episodes = args[0], args[1]
     logging.info(f"notify received args: name:{args[0]} episodes:{args[1]}")
 
     notify_url = os.environ["NotifyURL"]
 
-    body = {
-        "content": f"Manga Update:\n{title}\n{json.dumps(episodes)}"
+
+    embed = {
+        'title': title,
+        'fields': [{'name': v, 'value': f'[Link]({base_url}{k}/)', 'inline': True} for k, v in episodes.items()]
     }
 
-    requests.post(notify_url, json=body)
+    requests.post(notify_url, json={'embeds': [embed]})
 
-    '''
-    Activity trigger requires a return value, otherwise the orchestrator function will throw an exception
-    '''
+    # Activity trigger requires a return value, otherwise the orchestrator function will throw an exception
     return 'notified user of new manga update'
+
