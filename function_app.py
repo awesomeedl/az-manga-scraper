@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 # Learn more at aka.ms/pythonprogrammingmodel
 
-app = df.DFApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+app = df.DFApp()
 
 base_url = "https://www.manhuagui.com/comic/"
 
@@ -34,6 +34,7 @@ async def timer_start(mytimer: func.TimerRequest, client: df.DurableOrchestratio
 # Orchestrator
 @app.orchestration_trigger(context_name="context")
 def scrape_orchestrator(context: df.DurableOrchestrationContext):
+    
     table: list[dict] = yield context.call_activity("read_table")
 
     scrape_tasks = []
@@ -49,6 +50,7 @@ def scrape_orchestrator(context: df.DurableOrchestrationContext):
 
     update_tasks = []
     notify_tasks = []
+
     for i, manga in enumerate(table):
         if not results[i]: continue
 
@@ -87,7 +89,7 @@ def write_table(table: func.Out[str], entity: dict) -> str:
 
 @app.activity_trigger(input_name="args")
 def scrape(args: tuple[str, str]):
-    manga_id, latest_ep = args[0], int(args[1])
+    manga_id, latest_ep = args[0], int(args[1]) if args[1] else None
 
     logging.info(f"scrape received args: id:{manga_id} latest:{latest_ep}")
 
@@ -120,7 +122,6 @@ def notify(args: tuple[dict, dict[int, str]]) -> str:
 
     notify_url = os.environ["NotifyURL"]
 
-
     embed = {
         'title': manga['name'],
         'thumbnail': { 
@@ -129,7 +130,7 @@ def notify(args: tuple[dict, dict[int, str]]) -> str:
         'fields': [
             {
                 'name': v, 
-                'value': f'[Link]({base_url}{k}/)', 
+                'value': f'[Link]({base_url}{manga["RowKey"]}/{k}/)', 
                 'inline': True
             } for k, v in episodes.items()
         ]
